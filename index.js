@@ -1,76 +1,52 @@
 const express = require("express");
 const cors = require("cors");
-const mysql = require("mysql");
+const knex = require("knex").default;
+const connection = knex({
+  client: "mysql",
+  connection: {
+    host: "localhost",
+    user: "root",
+    password: "1234",
+    database: "hotel",
+  },
+});
 
 const app = express();
 
-/*const checkin = req.body.checkin
-const checkout = req.body.checkout
-const tipologia = req.body.roomType*/
-
-const SELECT_NOTAVAILABLE_ROOMS =
-  "SELECT camera.Nome FROM prenotazione,camera WHERE CheckIn < ? AND CheckOut > ? AND Tipo = ? ";
-
-const SELECT_ALL_ROOMS = "SELECT * FROM prenotazione,camera";
-
-const connection = mysql.createConnection({
-  host: "localhost",
-  user: "root",
-  password: "1234",
-  database: "hotel",
-});
-
-connection.connect((err) => {
+connection((res, err) => {
   if (err) {
-    return err;
-  }
-});
-
-//connection.query(SELECT_NOTAVAILABLE_ROOMS,[checkin,checkout,tipologia],(error, result) => { console.log.result});
-
-connection.connect((err) => {
-  if (err) {
-    return err;
+    console.log(err);
   }
 });
 
 app.use(cors());
 app.use(express.json());
 
-app.get("/", (req, res) => {
-  res.send("vai a /prenotazioni per vedere le prenotazioni ");
-});
+app.post("/", async (req, res) => {
+  const checkin = req.body.checkin;
+  const checkout = req.body.checkout;
+  const roomName = req.body.roomName;
 
-app.get("/prenotazioni", (req, res) => {
-  connection.query(SELECT_ALL_ROOMS, (err, results) => {
-    if (err) {
-      return console.log(err);
-    } else {
-      return res.json(results);
+  const toCompare = await connection("prenotazione").select(
+    "CheckIn",
+    "CheckOut",
+    "camera_Nome"
+  );
+  let count = 0;
+  if (toCompare.length !== 0) {
+    for (const result in toCompare) {
+      count =
+        checkin < result.CheckIn &&
+        checkout > result.CheckOut &&
+        roomName === result.camera_Nome
+          ? count + 1
+          : count;
     }
-  });
+  }
+  res.json({ isAvailable: count === 0 });
 });
 
-const SUBMIT_CLIENT_DATA =
-  "INSERT INTO cliente (Nome, Cognome, Telefono, Email, NrPassaporto) VALUES (?,?,?,?,?)";
-
-const SUBMIT_BOOKING_DATA =
-  "INSERT INTO prenotazione (CheckIn, CheckOut, CodiceGenerato, cliente_idCliente, camera_Nome ) VALUES (?,?,?,(SELECT LAST_INSERT_ID()),?)";
-
-const SUBMIT_INTESTATARIO_DATA =
-  "INSERT INTO intestatarioFattura (Nome, Cognome, Citta, Indirizzo, CAP) VALUES (?,?,?,?,?)";
-
-const SUBMIT_FATTURA_DATA =
-  "INSERT INTO fattura (Data, ImportoTotale, IntestatarioFattura_idIntestatarioFattura, prenotazione_idPrenotazione) VALUES (?,?,(SELECT LAST_INSERT_ID()),(SELECT idPrenotazione FROM prenotazione WHERE (CheckIn = checkin AND CheckOut = checkout AND camera_Nome = roomName)))";
-
-const querries = [
-  SUBMIT_CLIENT_DATA,
-  SUBMIT_BOOKING_DATA,
-  SUBMIT_INTESTATARIO_DATA,
-  SUBMIT_FATTURA_DATA,
-];
-
-app.post("/prenotazioni/prenota", (req, res) => {
+app.post("/prenota", async (req, result) => {
   const checkin = req.body.checkin;
   const checkout = req.body.checkout;
   const roomName = req.body.roomName;
@@ -86,53 +62,68 @@ app.post("/prenotazioni/prenota", (req, res) => {
   const indirizzo = req.body.adress;
   const citta = req.body.city;
   const cap = req.body.zip;
-  let price;
 
-  connection.query(
-    "SELECT Prezzo FROM camera WHERE Nome = ?",
-    [roomName],
-    (err, rows) => {
-      if (err) throw err;
-      setValue(rows[0].Prezzo);
-    }
-  );
+  console.log(cognome, telefono);
 
-  async function setValue(value) {
-    await 1;
-    price = value;
-    console.log(price);
-  }
-
+  //Needed to add await because the function is a promise.
+  let price = await connection("camera")
+    .where({ Nome: roomName })
+    .select("Prezzo")
+    .then((res) => {
+      return res[0].Prezzo;
+    });
 
   const today = new Date().toISOString().split("T")[0];
-  console.log("today is " + today);
 
   const period =
     (new Date(checkout).getTime() - new Date(checkin).getTime()) /
     (1000 * 3600 * 24);
-  console.log("check in is " + checkin + " checkout is " + checkout);
-  console.log("period is " + period);
-  console.log("price is " + price);
   const prezzoTot = period * price;
-  console.log("Prezzo tot is " + prezzoTot);
 
-  const values = [
-    [nome, cognome, telefono, email, NrPassaporto],
-    [checkin, checkout, "1234", roomName],
-    [nomei, cognomei, citta, indirizzo, cap],
-    [today, prezzoTot],
-  ];
-
-  for (let i = 0; i < 4; i++) {
-    connection.query(querries[i], values[i], (err, result) => {
-      if (err) {
-        console.log(i + " " + err);
-      } else {
-        console.log(i + " Values Inserted " + result.insertId);
-      }
+  const idIntest = await connection("intestatariofattura")
+    .insert({
+      Nome: nomei,
+      Cognome: cognomei,
+      Citta: citta,
+      Indirizzo: indirizzo,
+      CAP: cap,
+    })
+    .then((res) => {
+      return res[0];
     });
-  }
-  connection.query();
+
+  connection("cliente")
+    .insert({
+      Nome: nome,
+      Cognome: cognome,
+      Telefono: telefono,
+      Email: email,
+      NrPassaporto: NrPassaporto,
+    })
+    .then((res) => {
+      connection("prenotazione")
+        .insert({
+          CheckIn: checkin,
+          CheckOut: checkout,
+          CodiceGenerato: "1234",
+          cliente_idCliente: res[0],
+          camera_Nome: roomName,
+        })
+        .then((res) => {
+          connection("fattura")
+            .insert({
+              Data: today,
+              ImportoTotale: prezzoTot,
+              IntestatarioFattura_idIntestatarioFattura: idIntest,
+              prenotazione_idPrenotazione: res[0],
+            })
+            .then((res, err) => {
+              if (err) {
+                console.log(err);
+              } else result.json({ isInserted: true });
+            });
+        });
+    });
 });
 
 app.listen(4000, () => {
